@@ -69,6 +69,75 @@ import operator
 #     messages: Annotated[Sequence[BaseMessage], operator.add]
 #     # Add other state elements if building a more complex graph
 
+# --- RAG & Memory Components ---
+import chromadb
+from chromadb.utils import embedding_functions
+from mem0 import Memory
+# --- Document Processing ('docling' stand-in) ---
+from langchain.document_loaders import PyPDFLoader, TextLoader, DirectoryLoader, UnstructuredFileLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.schema import Document as LangchainDocument # Rename to avoid conflict
+
+# --- Agent State (Example for potential graph expansion) ---
+import operator
+# class AgentState(TypedDict):
+#     messages: Annotated[Sequence[BaseMessage], operator.add]
+#     # Add other state elements if building a more complex graph
+
+# --- Configuration (Add RAG/Mem0 specific) ---
+CHROMA_DB_PATH = "./chroma_db_supervisor" # Directory to store persistent ChromaDB data
+COLLECTION_NAME = "supervisor_knowledge_base"
+# Using default SentenceTransformer (runs locally, free)
+EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
+# For OpenAI embeddings (requires API key and billing):
+# EMBEDDING_MODEL_NAME = "text-embedding-ada-002"
+# embedding_func = embedding_functions.OpenAIEmbeddingFunction(api_key=os.getenv("OPENAI_API_KEY"), model_name=EMBEDDING_MODEL_NAME)
+
+# --- Helper Functions for Document Processing ('docling' stand-in) ---
+
+def load_and_split_documents(source_path: str, workspace_dir: str, chunk_size: int = 1000, chunk_overlap: int = 150) -> List[LangchainDocument]:
+    """
+    Loads documents from a file or directory (relative to workspace) and splits them.
+    Represents the 'docling' functionality. Supports .txt, .pdf, .csv, .md etc. via UnstructuredFileLoader.
+    """
+    full_path = source_path
+    if not os.path.isabs(source_path):
+        full_path = os.path.join(workspace_dir, source_path)
+
+    if not os.path.exists(full_path):
+        print(f"Error: Source path not found: {full_path}")
+        return []
+
+    documents = []
+    print(f"Loading documents from: {full_path}")
+    if os.path.isdir(full_path):
+        # Load all supported files from a directory
+        # Consider adding specific loaders for better control if needed (e.g., PyPDFLoader)
+        loader = DirectoryLoader(full_path, glob="**/*.*", loader_cls=UnstructuredFileLoader, show_progress=True, use_multithreading=True)
+        documents = loader.load()
+    elif os.path.isfile(full_path):
+        # Use UnstructuredFileLoader for broad single-file support
+        loader = UnstructuredFileLoader(full_path)
+        documents = loader.load()
+    else:
+        print(f"Error: Path is neither a file nor a directory: {full_path}")
+        return []
+
+    if not documents:
+        print("No documents loaded.")
+        return []
+
+    # Split documents into manageable chunks
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap
+    )
+    split_docs = text_splitter.split_documents(documents)
+    print(f"Loaded and split {len(documents)} document(s) into {len(split_docs)} chunks.")
+    return split_docs
+
+
+
 # --- SQL Agent Class ---
 class SQLAgent:
     """
@@ -991,21 +1060,49 @@ Ensure the output is a valid JSON object.
         return result_message
 
 
-# --- Supervisor Agent Class ---
+# --- Supervisor Agent Class (Modified for RAG) ---
 class SupervisorAgent:
     def __init__(self, model_name: str = "mistral", temperature: float = 0.7, db_uri: Optional[str] = None):
         self.model_name = model_name; self.temperature = temperature; self.db_uri = db_uri
         self.llm = ChatOllama(model=self.model_name, temperature=self.temperature)
         self.workspace_dir = os.path.abspath("./agent_workspace"); os.makedirs(self.workspace_dir, exist_ok=True)
         print(f"Supervisor using workspace: {self.workspace_dir}")
+
         # Initialize specialized agents/logic providers
         self.sql_agent_instance = self._initialize_sql_agent()
         self.visualization_agent_instance = self._initialize_visualization_agent()
         self.modeling_agent_instance = self._initialize_modeling_agent()
-        self.forecasting_agent_instance = self._initialize_forecasting_agent() # NEW
-        self.tools = self._get_tools()
+        self.forecasting_agent_instance = self._initialize_forecasting_agent()
+
+        # --- Initialize RAG Components ---
+        self.embedding_func = self._initialize_embedding_function()
+        self.chroma_client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
+        self.collection = self.chroma_client.get_or_create_collection(
+            name=COLLECTION_NAME,
+            embedding_function=self.embedding_func # Use the initialized function
+        )
+        print(f"ChromaDB collection '{COLLECTION_NAME}' loaded/created at '{CHROMA_DB_PATH}'.")
+
+        # --- Initialize Memory ---
+        self.mem0_memory = Memory()
+        print("Mem0 initialized.")
+
+        # --- Initialize Tools & Agent Executor ---
+        self.tools = self._get_tools() # Now includes RAG tool
         self.agent_executor = self._create_agent_executor()
 
+    def _initialize_embedding_function(self):
+        """Initializes the embedding function based on configuration."""
+        # Add logic here if you want to switch between OpenAI and SentenceTransformers easily
+        print(f"Initializing embedding function: {EMBEDDING_MODEL_NAME}")
+        # Default to SentenceTransformer
+        return embedding_functions.SentenceTransformerEmbeddingFunction(model_name=EMBEDDING_MODEL_NAME)
+        # Example for OpenAI:
+        # openai_key = os.getenv("OPENAI_API_KEY")
+        # if not openai_key: raise ValueError("OPENAI_API_KEY needed for OpenAI embeddings")
+        # return embedding_functions.OpenAIEmbeddingFunction(api_key=openai_key, model_name=EMBEDDING_MODEL_NAME)
+
+    # --- Keep existing agent initializers ---
     def _initialize_sql_agent(self) -> Optional[SQLAgent]:
         if not self.db_uri: return None
         try: return SQLAgent(llm=self.llm, db_uri=self.db_uri, verbose=True)
@@ -1016,59 +1113,87 @@ class SupervisorAgent:
     def _initialize_modeling_agent(self) -> Optional[ModelingAgent]:
          try: return ModelingAgent(llm=self.llm, workspace_dir=self.workspace_dir)
          except Exception as e: print(f"Warn: Modeling Agent init fail: {e}"); return None
-    # NEW: Initialize Forecasting Agent Logic
     def _initialize_forecasting_agent(self) -> Optional[ForecastingAgent]:
-         try:
-             print("Initializing Forecasting Agent Logic...")
-             return ForecastingAgent(llm=self.llm, workspace_dir=self.workspace_dir)
-         except Exception as e:
-              print(f"Warning: Failed to initialize Forecasting Agent: {e}. Forecasting tool will not be available.")
-              return None
+         try: return ForecastingAgent(llm=self.llm, workspace_dir=self.workspace_dir)
+         except Exception as e: print(f"Warn: Forecast Agent init fail: {e}"); return None
 
-    # --- Tool Definition Wrapper for Forecasting ---
-    def _run_forecasting_tool(self, data_source: str, request: str) -> str:
-        """
-        Tool for the Supervisor Agent to run time series forecasting tasks.
-        Takes data (file path or CSV string) and a natural language request describing the
-        forecasting task (e.g., "Forecast sales for the next 12 months using sales_data.csv").
-        It handles loading, preprocessing, training (SARIMAX), forecasting, evaluation, and optional saving.
-
-        Args:
-            data_source: Path to the time series data file (e.g., 'sales.csv' in workspace) or raw CSV data as a string.
-            request: Natural language description of the forecasting task. CRITICAL: Must mention the target column to forecast, the time/date column in the source data, and the desired forecast horizon (number of steps). Optionally specify frequency ('D', 'MS', etc.) or model parameters.
-        """
-        if not self.forecasting_agent_instance:
-            return "Forecasting Agent is not configured or failed to initialize."
+    # --- RAG Helper Methods ---
+    def _add_documents_to_chroma(self, documents: List[LangchainDocument]):
+        """Adds processed document chunks to the ChromaDB collection."""
+        if not documents: print("No documents provided to add."); return
+        ids = [str(uuid.uuid4()) for _ in documents]
+        contents = [doc.page_content for doc in documents]
+        metadatas = [doc.metadata for doc in documents]
         try:
-            result_message = self.forecasting_agent_instance.run_forecasting_task(
-                data_source=data_source,
-                request=request
-            )
-            return result_message
-        except Exception as e:
-            print(f"Unexpected error in forecasting tool wrapper: {e}\n{traceback.format_exc()}")
-            return f"An unexpected error occurred while running the forecasting tool: {e}"
+            print(f"Adding {len(contents)} document chunks to ChromaDB '{COLLECTION_NAME}'...")
+            self.collection.add(documents=contents, metadatas=metadatas, ids=ids)
+            print(f"Successfully added {len(contents)} chunks.")
+            # Optional: Add info about the ingestion to Mem0
+            sources_str = ", ".join(list(set(m.get('source', 'unknown') for m in metadatas)))
+            self.mem0_memory.add(f"Ingested {len(contents)} chunks from sources: {sources_str}", user_id="supervisor_system", agent_id="doc_ingestor")
+        except Exception as e: print(f"Error adding documents to ChromaDB: {e}")
 
-    # --- Tool Definition Wrappers for Modeling, Viz & SQL ---
-    def _run_modeling_tool(self, data_source: str, request: str) -> str:
+    def _retrieve_relevant_context(self, query: str, n_results: int = 5) -> List[str]:
+        """Queries ChromaDB for relevant document chunks."""
+        try:
+            results = self.collection.query(query_texts=[query], n_results=n_results, include=['documents'])
+            if results and results.get('documents') and results['documents'][0]:
+                print(f"Retrieved {len(results['documents'][0])} relevant context chunks from ChromaDB.")
+                return results['documents'][0]
+            else: print("No relevant documents found in ChromaDB."); return []
+        except Exception as e: print(f"Error querying ChromaDB: {e}"); return []
+
+    # --- Tool Definition Wrappers (Keep existing, add RAG tool) ---
+    def _run_modeling_tool(self, data_source: str, request: str) -> str: # Keep as is
         if not self.modeling_agent_instance: return "Modeling Agent not init."
         try: return self.modeling_agent_instance.run_modeling_task(data_source, request)
         except Exception as e: print(f"Modeling tool error: {e}\n{traceback.format_exc()}"); return f"Modeling tool error: {e}"
-    def _run_visualization_tool(self, data_source: str, request: str, output_filename: str) -> str:
+    def _run_visualization_tool(self, data_source: str, request: str, output_filename: str) -> str: # Keep as is
         if not self.visualization_agent_instance: return "Viz Agent not init."
         try: return self.visualization_agent_instance.generate_plot(data_source, request, output_filename)
         except Exception as e: return f"Viz tool error: {e}"
-    def _run_sql_query_tool(self, natural_language_query: str) -> str:
+    def _run_sql_query_tool(self, natural_language_query: str) -> str: # Keep as is
         if not self.sql_agent_instance: return "SQL Agent not init."
         try:
             response = self.sql_agent_instance.run(natural_language_query)
             if response["error"]: return f"SQL Error: {response['error']}\nSQL: {response['generated_sql']}"
             return f"Result:\n{response['result']}\n\nSQL:\n```sql\n{response['generated_sql']}\n```"
         except Exception as e: return f"SQL tool error: {e}"
+    def _run_forecasting_tool(self, data_source: str, request: str) -> str: # Keep as is
+        if not self.forecasting_agent_instance: return "Forecast Agent not init."
+        try: return self.forecasting_agent_instance.run_forecasting_task(data_source, request)
+        except Exception as e: print(f"Forecast tool error: {e}\n{traceback.format_exc()}"); return f"Forecast tool error: {e}"
+
+    # --- NEW Tool for Adding Knowledge ---
+    def _add_knowledge_tool(self, source_path: str) -> str:
+        """
+        Tool to add knowledge to the supervisor's knowledge base.
+        Loads and processes documents from a given file path or directory path
+        (relative to the agent's workspace) and stores them in the vector database.
+
+        Args:
+            source_path (str): The path to the document file (e.g., 'docs/policy.pdf')
+                               or directory (e.g., 'knowledge_files/') within the workspace.
+        """
+        print(f"\n--- Knowledge Addition Tool ---")
+        print(f"Source path: {source_path}")
+        try:
+            # Use the helper function for loading/splitting
+            documents = load_and_split_documents(source_path, self.workspace_dir)
+            if not documents:
+                return f"Failed to load or split documents from '{source_path}'. No documents were added."
+
+            # Use the helper function to add to Chroma
+            self._add_documents_to_chroma(documents)
+            return f"Successfully processed and added knowledge from '{source_path}' to the knowledge base."
+
+        except Exception as e:
+            print(f"Error in knowledge addition tool: {e}\n{traceback.format_exc()}")
+            return f"An error occurred while adding knowledge from '{source_path}': {e}"
 
 
     def _get_tools(self) -> List[BaseTool]:
-        """Gets all tools available to the Supervisor Agent."""
+        """Gets all tools available to the Supervisor Agent, including RAG."""
         all_tools = []
         # File Management Tools
         try:
@@ -1088,54 +1213,166 @@ class SupervisorAgent:
              modeling_tool = tool(name="run_modeling_task", func=self._run_modeling_tool, description=f"Train/evaluate ML model (classification/regression) from data (path/CSV string in '{self.workspace_dir}'). Request MUST specify target column. Returns metrics & optional saved model path. Args: data_source, request.")
              all_tools.append(modeling_tool)
              print(f"Loaded Modeling Tool: {modeling_tool.name}")
-        # Forecasting Tool (NEW)
+        # Forecasting Tool
         if self.forecasting_agent_instance:
-             forecasting_tool = tool(
-                 name="run_time_series_forecast",
-                 func=self._run_forecasting_tool,
-                 description=f"""Use this tool to generate a time series forecast using the SARIMAX model.
-You MUST provide:
-1. `data_source`: Path to the time series data file (e.g., 'sales_data.csv' located in '{self.workspace_dir}') OR the actual data as a CSV-formatted string.
-2. `request`: A natural language description of the forecasting task. CRITICAL: Clearly state the column containing the values to forecast (target), the column containing the date/time information, and the desired forecast horizon (number of steps/periods). Optionally specify the data frequency (e.g., 'D' for daily, 'MS' for monthly start) if known, or specific SARIMAX orders. Example: "Forecast the 'call_volume' for the next 7 days using 'call_data.csv'. The time column is 'timestamp' and frequency is daily ('D'). Save the forecast."
-The tool handles loading, preprocessing, training, forecasting, evaluation, and optional saving. It returns evaluation metrics and paths to saved forecast/model files.""",
-             )
+             forecasting_tool = tool(name="run_time_series_forecast", func=self._run_forecasting_tool, description=f"Generate time series forecast using SARIMAX. Args: data_source (path/CSV string in '{self.workspace_dir}'), request (natural language, MUST specify target col, time col, horizon; optionally freq, orders). Returns metrics, forecast summary, optional saved paths.")
              all_tools.append(forecasting_tool)
              print(f"Loaded Forecasting Tool: {forecasting_tool.name}")
+
+        # --- NEW Knowledge Addition Tool ---
+        knowledge_tool = tool(
+            name="add_knowledge_base_document",
+            func=self._add_knowledge_tool,
+            description=f"Add knowledge from a document or directory to the assistant's knowledge base for later retrieval. Use this to teach the assistant about company policies, project details, etc. Args: source_path (path to file/dir in workspace '{self.workspace_dir}')."
+        )
+        all_tools.append(knowledge_tool)
+        print(f"Loaded Knowledge Tool: {knowledge_tool.name}")
 
         if not all_tools: print("Warning: No tools loaded for Supervisor.")
         return all_tools
 
     def _create_agent_executor(self) -> AgentExecutor:
-        agent_type = AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION
-        print(f"Creating Supervisor Agent Executor with tools: {[t.name for t in self.tools]}")
+        # Use a slightly more robust agent type if available, or stick with the original
+        # agent_type = AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION
+        agent_type = AgentType.OPENAI_FUNCTIONS # Often works well with Ollama models supporting function calling
+        # agent_type = AgentType.ZERO_SHOT_REACT_DESCRIPTION # A fallback if others fail
+
+        print(f"Creating Supervisor Agent Executor ({agent_type}) with tools: {[t.name for t in self.tools]}")
         if not self.tools: raise ValueError("Cannot create agent executor with no tools.")
-        try:
-            # Increased max_iterations slightly for potentially longer forecasting tasks
-            return initialize_agent(tools=self.tools, llm=self.llm, agent=agent_type, verbose=True,
-                                    handle_parsing_errors="Check your output format!", max_iterations=25,
-                                    early_stopping_method="generate")
-        except Exception as e: print(f"Error initializing supervisor agent executor: {e}"); raise
 
-    def run(self, user_input: str) -> Dict[str, Any]:
-        print(f"\n--- Running Supervisor Agent ---"); print(f"Input: {user_input}")
-        if not self.agent_executor: return {"error": "Supervisor agent executor not initialized."}
+        # Define the core prompt, including instructions about using the knowledge base implicitly
+        # Note: The agent might not *explicitly* call a "retrieve" tool, but the final synthesis step will use it.
+        system_prompt = """You are a helpful and comprehensive assistant for company employees.
+You have access to several tools to perform tasks like querying databases, creating visualizations, training models, forecasting time series, managing files, and adding knowledge.
+You also have access to an internal knowledge base and conversation memory to provide more accurate and context-aware answers.
+When asked a question, first try to use your specialized tools if the request clearly matches their capabilities (SQL, plotting, modeling, forecasting, file management).
+If the question is general, informational, or asks about previously discussed topics or ingested knowledge, rely on your internal knowledge and memory.
+Be clear and concise in your responses. If you use a tool, summarize the result. If you use the knowledge base or memory, indicate that.
+If you cannot answer a question or perform a task, state that clearly.
+Okay, begin!"""
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", system_prompt),
+                MessagesPlaceholder("chat_history", optional=True), # For potential future history management within agent
+                ("human", "{input}"),
+                MessagesPlaceholder("agent_scratchpad"),
+            ]
+        )
+
         try:
-            result = self.agent_executor.invoke({"input": user_input})
-            print(f"--- Supervisor Agent Finished ---"); return result
+            # Use the prompt with the agent initialization if supported by the type
+            agent = initialize_agent(
+                tools=self.tools,
+                llm=self.llm,
+                agent=agent_type,
+                verbose=True,
+                handle_parsing_errors="Check your output format and try again!", # More helpful error
+                max_iterations=15, # Keep reasonable default
+                early_stopping_method="generate",
+                # agent_kwargs={"system_message": system_prompt} # Pass system message if agent_type supports it
+                # prompt=prompt # Pass full prompt if agent_type supports it
+            )
+            # If the agent type doesn't directly support prompt, the system message might need to be part of the input or handled differently.
+            # For now, we rely on the final synthesis step for RAG integration.
+            return agent # initialize_agent returns the AgentExecutor directly
         except Exception as e:
-            print(f"Error during Supervisor Agent execution: {e}\n{traceback.format_exc()}")
-            output = None; result = locals().get('result')
-            if result and isinstance(result, dict): output = result.get('output')
-            return {"error": str(e), "partial_output": output}
+            print(f"Error initializing supervisor agent executor: {e}\n{traceback.format_exc()}")
+            raise
+
+    def run(self, user_input: str, user_id: str = "default_user") -> Dict[str, Any]:
+        """Runs the agent executor and then enhances the response with RAG and Memory."""
+        print(f"\n--- Running Supervisor Agent ---"); print(f"User ({user_id}) Input: {user_input}")
+        if not self.agent_executor: return {"error": "Supervisor agent executor not initialized."}
+
+        agent_response = {}
+        final_answer = "An error occurred."
+        try:
+            # 1. Run the main agent executor (might use tools)
+            # Pass input in the expected format (often a dictionary)
+            agent_response = self.agent_executor.invoke({"input": user_input})
+            initial_output = agent_response.get("output", "Agent did not produce a direct output.")
+            print(f"Initial Agent Output: {initial_output}")
+
+            # 2. Retrieve context from ChromaDB (RAG)
+            retrieved_context_chunks = self._retrieve_relevant_context(user_input, n_results=3) # Get top 3 chunks
+            retrieved_context = "\n\n".join(retrieved_context_chunks) if retrieved_context_chunks else "No relevant context found in knowledge base."
+
+            # 3. Retrieve relevant memories from Mem0
+            mem0_context = ""
+            try:
+                relevant_memories = self.mem0_memory.search(query=user_input, user_id=user_id, limit=5)
+                if relevant_memories:
+                    mem0_context = "\n\nRelevant past interactions:\n" + "\n".join([f"- {m['text']}" for m in relevant_memories])
+                    print(f"Retrieved {len(relevant_memories)} relevant memories from Mem0.")
+                else:
+                    print("No relevant memories found in Mem0.")
+            except Exception as e:
+                print(f"Could not retrieve memories from Mem0: {e}")
 
 
-# --- Example Usage ---
+            # 4. Synthesize Final Answer using LLM with all context
+            synthesis_prompt = ChatPromptTemplate.from_messages([
+                SystemMessage(content=f"""You are synthesizing the final answer for a user based on their query, the initial attempt by an assistant, retrieved knowledge base context, and conversation history.
+Your goal is to provide the most accurate, complete, and helpful response.
+- Prioritize information from the 'Retrieved Context' if it directly answers the query.
+- Use the 'Initial Assistant Output' if it involved a tool execution (like SQL query, file operation, model training) and summarize its results clearly.
+- Incorporate 'Relevant Past Interactions' for conversational continuity.
+- If the initial output seems sufficient and context/memory don't add much, you can rely primarily on the initial output.
+- If the initial output failed or was irrelevant, construct the answer primarily from the retrieved context and memory.
+- Be concise and directly answer the user's query.
+- Do not mention the synthesis process itself, just provide the final answer.
+"""),
+                HumanMessage(content=f"""Okay, synthesize the final response based on the following:
+
+User Query:
+{user_input}
+
+Initial Assistant Output:
+{initial_output}
+
+Retrieved Context from Knowledge Base:
+{retrieved_context}
+
+Relevant Past Interactions:
+{mem0_context}
+
+Synthesized Final Answer:
+""")
+            ])
+
+            synthesis_chain = synthesis_prompt | self.llm | StrOutputParser()
+            print("\n--- Synthesizing Final Answer ---")
+            final_answer = synthesis_chain.invoke({})
+            print(f"Synthesized Answer: {final_answer}")
+
+            # 5. Add final interaction to Mem0
+            try:
+                self.mem0_memory.add(text=f"User: {user_input}\nAssistant: {final_answer}", user_id=user_id, agent_id="supervisor_final")
+                print("Saved final interaction to Mem0.")
+            except Exception as e:
+                print(f"Could not save final interaction to Mem0: {e}")
+
+            # Add the synthesized answer to the original response dict
+            agent_response['final_output'] = final_answer
+
+        except Exception as e:
+            print(f"Error during Supervisor Agent execution or RAG synthesis: {e}\n{traceback.format_exc()}")
+            final_answer = f"An error occurred: {e}"
+            agent_response['error'] = str(e)
+            agent_response['final_output'] = final_answer # Ensure final_output exists even on error
+
+        print(f"--- Supervisor Agent Finished ---")
+        return agent_response
+
+
+# --- Example Usage (Modified) ---
 if __name__ == "__main__":
     # --- Configuration ---
     OLLAMA_MODEL = "mistral"; DB_TYPE = "sqlite"; DB_NAME = "sample_company.db"
     DB_URI = f"sqlite:///{DB_NAME}" if DB_TYPE == "sqlite" else None
 
-    # --- Database Setup (SQLite Example) ---
+    # --- Database Setup (SQLite Example - Keep as is) ---
     if DB_URI and not os.path.exists(DB_NAME):
         print(f"Creating dummy SQLite database: {DB_NAME}"); import sqlite3
         conn = sqlite3.connect(DB_NAME); cursor = conn.cursor()
@@ -1148,68 +1385,82 @@ if __name__ == "__main__":
     print("\n--- Initializing Supervisor Agent ---")
     supervisor = SupervisorAgent(model_name=OLLAMA_MODEL, temperature=0.1, db_uri=DB_URI)
 
-    # --- Prepare Data Files (using Supervisor) ---
-    DATA_FILE_FOR_MODELING = "employees_for_modeling.csv"
-    TIME_SERIES_DATA_FILE = "sample_ts_data.csv"
+    # --- Create Dummy Knowledge File ---
+    KNOWLEDGE_FILE = "company_policy.txt"
+    knowledge_file_path = os.path.join(supervisor.workspace_dir, KNOWLEDGE_FILE)
+    if not os.path.exists(knowledge_file_path):
+        print(f"\n--- Creating Dummy Knowledge File: {KNOWLEDGE_FILE} ---")
+        policy_content = """
+Company Policy Document - v1.2
 
-    # Prepare modeling data
+Remote Work:
+Employees in Engineering and Marketing departments are eligible for full remote work.
+Sales department requires hybrid work (3 days in office).
+HR department requires full-time in-office presence.
+All remote employees must maintain core working hours of 10 AM to 4 PM local time.
+
+Vacation Policy:
+Standard vacation allowance is 20 days per year, accrued monthly.
+Unused vacation days up to 5 can be carried over to the next year.
+Requests must be submitted via the HR portal at least 2 weeks in advance.
+
+Project Phoenix:
+This is a high-priority project for Q3/Q4.
+Lead Engineer: Charlie. Project Manager: David.
+Weekly status reports are due every Friday by 5 PM EST.
+Key deliverable: Beta release by November 15th.
+"""
+        try:
+            with open(knowledge_file_path, "w") as f:
+                f.write(policy_content)
+            print(f"Knowledge file created at {knowledge_file_path}")
+        except Exception as e:
+            print(f"Error creating knowledge file: {e}")
+
+    # --- Add Knowledge using the Tool ---
+    if os.path.exists(knowledge_file_path):
+        print("\n--- Task: Add Knowledge to KB ---")
+        task_add_knowledge = f"Please add the document '{KNOWLEDGE_FILE}' to the knowledge base."
+        result_add_knowledge = supervisor.run(task_add_knowledge, user_id="admin_user")
+        print("\nAdd Knowledge Task Result:", result_add_knowledge.get('final_output', result_add_knowledge)) # Show final synthesized output
+    else:
+        print("\nSkipping knowledge addition task (knowledge file not found).")
+
+
+    # --- Ask Questions (Leveraging RAG) ---
+    print("\n--- Task: Ask question requiring KB ---")
+    task_rag1 = "What is the vacation policy regarding carry-over days?"
+    result_rag1 = supervisor.run(task_rag1, user_id="employee_alice")
+    print("\nKB Question 1 Result:", result_rag1.get('final_output', result_rag1))
+
+    print("\n--- Task: Ask another question requiring KB ---")
+    task_rag2 = "Who is the project manager for Project Phoenix?"
+    result_rag2 = supervisor.run(task_rag2, user_id="employee_bob")
+    print("\nKB Question 2 Result:", result_rag2.get('final_output', result_rag2))
+
+    print("\n--- Task: Ask question combining KB and potential DB ---")
+    task_rag_db = "What is Charlie's salary and role on Project Phoenix?" # Requires DB for salary, KB for role
+    result_rag_db = supervisor.run(task_rag_db, user_id="manager_dave")
+    print("\nCombined Question Result:", result_rag_db.get('final_output', result_rag_db))
+
+    # --- Run other tasks (Keep existing examples if desired) ---
+    # Example: SQL Query
     if DB_URI:
-        print(f"\n--- Preparing Data File: {DATA_FILE_FOR_MODELING} ---")
-        prep_task_model = f"Query DB for department, salary, experience_years. Save to '{DATA_FILE_FOR_MODELING}'. Tell me when done."
-        prep_result_model = supervisor.run(prep_task_model); print("\nData Prep (Model) Result:", prep_result_model)
-        data_file_path_model = os.path.join(supervisor.workspace_dir, DATA_FILE_FOR_MODELING)
-        if not os.path.exists(data_file_path_model): print(f"\nFATAL: Modeling data file not created."); exit()
-        else: print(f"\nModeling data file created: {data_file_path_model}")
-    else: data_file_path_model = None; print("\nSkipping modeling data prep (no DB_URI).")
+        print("\n--- Task: SQL Query ---")
+        task_sql = "Who are the employees in the Engineering department?"
+        result_sql = supervisor.run(task_sql, user_id="hr_manager")
+        print("\nSQL Task Result:", result_sql.get('final_output', result_sql))
 
-    # Prepare time series data (Create synthetic data if DB not available or doesn't have time data)
-    print(f"\n--- Preparing Data File: {TIME_SERIES_DATA_FILE} ---")
+    # Example: Forecasting (if data exists)
+    TIME_SERIES_DATA_FILE = "sample_ts_data.csv" # Ensure this matches earlier creation
     ts_file_path = os.path.join(supervisor.workspace_dir, TIME_SERIES_DATA_FILE)
-    if not os.path.exists(ts_file_path):
-         print("Creating synthetic time series data...")
-         dates = pd.date_range(start='2023-01-01', periods=100, freq='D')
-         # Simulate volume with trend and seasonality
-         volume = (np.arange(100) * 0.5 + 50 +
-                   np.sin(np.arange(100) * 2 * np.pi / 7) * 10 + # Weekly seasonality
-                   np.random.normal(0, 5, 100)) # Noise
-         ts_df = pd.DataFrame({'Date': dates, 'CallVolume': volume.astype(int)})
-         ts_df.to_csv(ts_file_path, index=False)
-         print(f"Synthetic time series data saved to {ts_file_path}")
-    else:
-         print(f"Using existing time series data file: {ts_file_path}")
-
-
-    # --- Run Modeling Task ---
-    if data_file_path_model:
-        print("\n--- Task: Regression Modeling ---")
-        task_model = f"Use '{DATA_FILE_FOR_MODELING}' to predict 'salary' from 'department', 'experience_years'. Save model as 'salary_predictor'."
-        result_model = supervisor.run(task_model); print("\nModeling Task Result:", result_model)
-    else: print("\nSkipping modeling task (no data file).")
-
-    # --- Run Forecasting Task (NEW) ---
     if os.path.exists(ts_file_path):
-        print("\n--- Task 7: Time Series Forecasting ---")
-        task7 = f"""
-        Using the data in '{TIME_SERIES_DATA_FILE}', generate a forecast for 'CallVolume'.
-        The time column is 'Date'. The frequency is daily ('D').
-        Forecast the volume for the next 14 days.
-        Evaluate the model performance.
-        Save the forecast results with the base name 'call_forecast'.
-        Save the trained model with the base name 'call_volume_forecaster'.
-        Report the evaluation metrics, forecast summary, and saved file paths.
-        """
-        result7 = supervisor.run(task7)
-        print("\nTask 7 (Forecasting) Result:")
-        print(result7)
-        # Verify output files exist
-        forecast_csv_path = os.path.join(supervisor.workspace_dir, "call_forecast_forecast.csv")
-        model_joblib_path = os.path.join(supervisor.workspace_dir, "call_volume_forecaster_model.joblib")
-        if os.path.exists(forecast_csv_path): print(f"\nSUCCESS: Forecast CSV found at: {forecast_csv_path}")
-        else: print(f"\nWARNING: Forecast CSV NOT found at: {forecast_csv_path}")
-        if os.path.exists(model_joblib_path): print(f"SUCCESS: Forecast model file found at: {model_joblib_path}")
-        else: print(f"\nWARNING: Forecast model file NOT found at: {model_joblib_path}")
-
+        print("\n--- Task: Time Series Forecasting ---")
+        task_forecast = f"Forecast 'CallVolume' from '{TIME_SERIES_DATA_FILE}' for 7 days. Time column is 'Date', frequency is 'D'."
+        result_forecast = supervisor.run(task_forecast, user_id="ops_manager")
+        print("\nForecasting Task Result:", result_forecast.get('final_output', result_forecast))
     else:
-        print("\nSkipping forecasting task because time series data file was not prepared.")
+        print("\nSkipping forecasting task (data file not found).")
+
 
     print("\n--- Agent Execution Finished ---")
