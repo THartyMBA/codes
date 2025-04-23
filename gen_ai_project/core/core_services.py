@@ -1,9 +1,10 @@
+# core/core_services.py
 
 import logging
 import os
 import uuid
 import asyncio
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable # Added Callable
 
 # --- Core Libraries ---
 import chromadb
@@ -12,20 +13,27 @@ from mem0 import Memory
 
 # --- LangChain & LangGraph ---
 from langchain_community.chat_models import ChatOllama
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, SystemMessage, HumanMessage
-from langchain_core.output_parsers import StrOutputParser
+# Removed unused prompt/parser imports here, they belong in handlers
 from langchain_core.tools import tool, BaseTool
 from langchain.agents import AgentType, initialize_agent, AgentExecutor
 from langchain.agents.agent_toolkits import FileManagementToolkit
 
 # --- Project Imports ---
-# Assuming this file is in core/, agents are in agents/, utils are in utils/
+# Assuming this file is in core/, agents are in agents/, utils are in utils/, handlers are in handlers/
 from ..agents.base_agent import BaseAgent # If BaseAgent is needed by tools
 from ..agents.sql_agent import SQLAgent
 from ..agents.visualization_agent import VisualizationAgent
 from ..agents.modeling_agent import ModelingAgent
 from ..agents.forecasting_agent import ForecastingAgent
 from ..agents.reporting_agent import ReportingAgent
+from ..handlers.knowledge_handler import KnowledgeHandler # Added
+from ..handlers.goal_handler import GoalHandler # Added
+from ..handlers.pipeline_handler import PipelineHandler # Added
+from ..handlers.monitoring_handler import MonitoringHandler # Added
+from ..handlers.admin_handler import AdminHandler # Added
+# Event and Scheduler handlers are typically managed at the API/run level, but Admin might need refs
+from ..handlers.event_handler import EventHandler
+from ..handlers.scheduler_handler import SchedulerHandler
 from ..utils import config
 from ..utils.document_processing import load_and_split_documents
 # Assuming calculate_forecast_metrics is moved
@@ -37,12 +45,21 @@ except ImportError:
 
 class CoreAgentServices:
     """
-    Initializes and holds shared resources and capabilities for agent handlers.
+    Initializes and holds shared resources, tool agents, the core agent executor,
+    and instances of operational handlers.
     """
-    def __init__(self, verbose: bool = False):
+    def __init__(self, event_queue: asyncio.Queue, verbose: bool = False):
+        """
+        Initializes CoreAgentServices.
+
+        Args:
+            event_queue: The shared asyncio.Queue for event handling.
+            verbose: Enable verbose logging.
+        """
         self.logger = logging.getLogger(__name__)
         self.logger.info("Initializing Core Agent Services...")
         self.verbose = verbose
+        self.event_queue = event_queue # Store event queue reference
 
         # --- Initialize Shared Resources ---
         self.llm = ChatOllama(model=config.OLLAMA_MODEL, temperature=config.DEFAULT_LLM_TEMPERATURE)
@@ -62,19 +79,43 @@ class CoreAgentServices:
         self.modeling_agent = self._initialize_modeling_agent()
         self.forecasting_agent = self._initialize_forecasting_agent()
         self.reporting_agent = self._initialize_reporting_agent()
+        self.logger.info("Tool agents initialized.")
 
         # --- Initialize File Toolkit ---
         self.fm_toolkit = FileManagementToolkit(root_dir=self.workspace_dir)
+        self.logger.info("File Management Toolkit initialized.")
+
+        # --- Initialize Handlers (passing self for services access) ---
+        # Order might matter if handlers depend on each other during init, but usually not.
+        self.knowledge_handler = KnowledgeHandler(self)
+        self.goal_handler = GoalHandler(self)
+        self.pipeline_handler = PipelineHandler(self)
+        # Monitoring handler needs the event queue
+        self.monitoring_handler = MonitoringHandler(self, self.event_queue, check_interval_seconds=90)
+        # Admin handler might need references to other handlers for status reporting
+        # Note: Event and Scheduler handlers are often started/managed externally (e.g., api.py)
+        # but we pass placeholder references if AdminHandler needs them.
+        # These external handlers would also need 'self' (CoreAgentServices) passed to them.
+        self.admin_handler = AdminHandler(
+            services=self,
+            # Pass None for handlers managed externally if Admin doesn't strictly need them at init
+            scheduler_handler=None, # Placeholder
+            event_handler=None, # Placeholder
+            goal_handler=self.goal_handler,
+            pipeline_handler=self.pipeline_handler
+        )
+        self.logger.info("Operational handlers initialized.")
 
         # --- Create Tools List (pointing to agent methods/wrappers) ---
         self.tools = self._get_tools()
 
         # --- Create Shared Agent Executor ---
+        # This executor is used by ChatHandler, EventHandler, SchedulerHandler etc.
         self.agent_executor = self._create_agent_executor()
 
         self.logger.info("Core Agent Services Initialized Successfully.")
 
-    # --- Initialization Helpers ---
+    # --- Initialization Helpers (Mostly unchanged) ---
     def _initialize_embedding_function(self):
         self.logger.info(f"Initializing embedding function: {config.EMBEDDING_MODEL_NAME}")
         return embedding_functions.SentenceTransformerEmbeddingFunction(model_name=config.EMBEDDING_MODEL_NAME)
@@ -100,13 +141,13 @@ class CoreAgentServices:
          try: return ReportingAgent(llm=self.llm, workspace_dir=self.workspace_dir, verbose=self.verbose)
          except Exception as e: self.logger.error(f"Reporting Agent initialization failed: {e}", exc_info=self.verbose); return None
 
-    # --- Async Wrappers for Sync Operations ---
+    # --- Async Wrappers for Sync Operations (Unchanged) ---
     async def _run_sync_in_thread(self, func, *args, **kwargs):
         """Runs a synchronous function in a thread pool."""
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, lambda: func(*args, **kwargs)) # None uses default ThreadPoolExecutor
+        return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
 
-    # --- Tool Wrappers (Async) ---
+    # --- Tool Wrappers (Async - Unchanged, except knowledge add removed) ---
     async def _run_sql_query_tool_async(self, natural_language_query: str) -> str:
         if not self.sql_agent: return "SQL Agent not initialized."
         try:
@@ -140,19 +181,21 @@ class CoreAgentServices:
             return await self.reporting_agent.run_report_generation(data_source, request)
         except Exception as e: self.logger.error(f"Reporting tool error: {e}", exc_info=self.verbose); return f"Reporting tool error: {e}"
 
-    async def _add_knowledge_tool_async(self, source_path: str) -> str:
-        self.logger.info(f"--- Knowledge Addition Tool --- Source path: {source_path}")
+    # --- Wrapper for Knowledge Add Tool ---
+    async def _knowledge_add_tool_wrapper(self, source_path: str) -> str:
+        """Wrapper for knowledge handler add_source to return string for agent tools."""
+        if not self.knowledge_handler: return "Error: Knowledge Handler not available."
         try:
-            documents = await self._run_sync_in_thread(load_and_split_documents, source_path, self.workspace_dir)
-            if not documents: return f"Failed to load/split documents from '{source_path}'."
-            await self.add_knowledge(documents) # Use the RAG helper
-            return f"Successfully processed and added knowledge from '{source_path}'."
-        except Exception as e: self.logger.error(f"Error in knowledge addition tool: {e}", exc_info=self.verbose); return f"Error adding knowledge: {e}"
+            result = await self.knowledge_handler.add_source(source_path)
+            return result.get("message", "An unknown error occurred during knowledge addition.")
+        except Exception as e:
+            self.logger.error(f"Error in knowledge add tool wrapper: {e}", exc_info=self.verbose)
+            return f"Error adding knowledge: {e}"
 
-    # --- Tool List Creation ---
+    # --- Tool List Creation (Updated) ---
     def _get_tools(self) -> List[BaseTool]:
         all_tools = []
-        # File Management Tools (Sync - Executor handles threading)
+        # File Management Tools
         try:
             all_tools.extend(self.fm_toolkit.get_tools())
             self.logger.debug(f"Loaded File Tools: {[t.name for t in self.fm_toolkit.get_tools()]}")
@@ -161,28 +204,45 @@ class CoreAgentServices:
         # Add other tools with async wrappers
         if self.sql_agent: all_tools.append(tool(name="query_sql_database", func=self._run_sql_query_tool_async, description="Query SQL DB with natural language.", coroutine=self._run_sql_query_tool_async))
         if self.viz_agent: all_tools.append(tool(name="create_visualization", func=self._run_visualization_tool_async, description=f"Create plot from data (path/CSV string in '{self.workspace_dir}'), save as image. Args: data_source, request, output_filename.", coroutine=self._run_visualization_tool_async))
-        if self.modeling_agent: all_tools.append(tool(name="run_modeling_task", func=self._run_modeling_tool_async, description=f"Train/evaluate ML model (classification/regression) from data (path/CSV string in '{self.workspace_dir}'). Args: data_source, request.", coroutine=self._run_modeling_tool_async))
+        if self.modeling_agent: all_tools.append(tool(name="run_modeling_task", func=self._run_modeling_tool_async, description=f"Train/evaluate ML model from data (path/CSV string in '{self.workspace_dir}'). Args: data_source, request.", coroutine=self._run_modeling_tool_async))
         if self.forecasting_agent: all_tools.append(tool(name="run_time_series_forecast", func=self._run_forecasting_tool_async, description=f"Generate time series forecast using SARIMAX. Args: data_source (path/CSV string in '{self.workspace_dir}'), request.", coroutine=self._run_forecasting_tool_async))
         if self.reporting_agent: all_tools.append(tool(name="generate_pdf_report", func=self._run_reporting_tool_async, description=f"Generate a PDF report from data (path/CSV string in '{self.workspace_dir}') based on a request. Args: data_source, request.", coroutine=self._run_reporting_tool_async))
 
-        all_tools.append(tool(name="add_knowledge_base_document", func=self._add_knowledge_tool_async, description=f"Add knowledge from a document or directory (in workspace '{self.workspace_dir}') to the knowledge base. Args: source_path.", coroutine=self._add_knowledge_tool_async))
+        # Updated Knowledge Add Tool
+        if self.knowledge_handler:
+             # Need a sync wrapper for func if executor doesn't handle coroutine-only tools well
+             # Using asyncio.run is generally discouraged within an existing loop,
+             # but might be necessary if the agent framework requires a sync func.
+             # A better approach is if the framework directly supports async func/coroutine.
+             # Assuming the framework handles `coroutine` correctly:
+             all_tools.append(tool(
+                 name="add_knowledge_base_document",
+                 func=None, # Let coroutine handle it
+                 description=f"Add knowledge from a document or directory (in workspace '{self.workspace_dir}') to the knowledge base. Args: source_path.",
+                 coroutine=self._knowledge_add_tool_wrapper
+             ))
+             # If sync func is strictly required:
+             # sync_wrapper = lambda sp: asyncio.run(self._knowledge_add_tool_wrapper(sp))
+             # all_tools.append(tool(..., func=sync_wrapper, coroutine=self._knowledge_add_tool_wrapper))
+
 
         self.logger.info(f"Assembled Tools: {[t.name for t in all_tools]}")
         return all_tools
 
-    # --- Agent Executor Creation ---
+    # --- Agent Executor Creation (Unchanged conceptually) ---
     def _create_agent_executor(self) -> Optional[AgentExecutor]:
-        agent_type = AgentType.OPENAI_FUNCTIONS
+        agent_type = AgentType.OPENAI_FUNCTIONS # Or another appropriate type
         self.logger.info(f"Creating Agent Executor ({agent_type})")
         if not self.tools: self.logger.error("Cannot create agent executor with no tools."); return None
         try:
-            # Prompt defined within the ChatHandler now, executor is more generic
+            # The prompt is now primarily the responsibility of the handler using the executor (e.g., ChatHandler)
+            # This executor is more generic.
             agent_executor = initialize_agent(
                 tools=self.tools,
                 llm=self.llm,
                 agent=agent_type,
                 verbose=self.verbose,
-                handle_parsing_errors=True,
+                handle_parsing_errors=True, # Use default error message or a custom function/string
                 max_iterations=15,
                 early_stopping_method="generate",
             )
@@ -190,33 +250,14 @@ class CoreAgentServices:
             return agent_executor
         except Exception as e: self.logger.error(f"Error initializing agent executor: {e}", exc_info=self.verbose); return None
 
-    # --- RAG/Memory Async Helpers ---
-    async def add_knowledge(self, documents: List): # Takes LangchainDocument list
-        """Adds document chunks to ChromaDB."""
-        if not documents: self.logger.warning("No documents provided to add_knowledge."); return
-        ids = [str(uuid.uuid4()) for _ in documents]
-        contents = [doc.page_content for doc in documents]
-        metadatas = [doc.metadata for doc in documents]
-        try:
-            self.logger.info(f"Adding {len(contents)} chunks to ChromaDB...")
-            await self._run_sync_in_thread(self.collection.add, documents=contents, metadatas=metadatas, ids=ids)
-            self.logger.info(f"Successfully added {len(contents)} chunks.")
-        except Exception as e: self.logger.error(f"Error adding documents to ChromaDB: {e}", exc_info=self.verbose)
+    # --- RAG/Memory Async Helpers (Removed RAG, kept Memory) ---
 
-    async def retrieve_context(self, query: str, n_results: int = config.RAG_RESULTS_COUNT) -> List[str]:
-        """Queries ChromaDB for relevant document chunks."""
-        try:
-            results = await self._run_sync_in_thread(
-                self.collection.query, query_texts=[query], n_results=n_results, include=['documents']
-            )
-            if results and results.get('documents') and results['documents'][0]:
-                self.logger.debug(f"Retrieved {len(results['documents'][0])} context chunks.")
-                return results['documents'][0]
-            else: self.logger.debug("No relevant context found."); return []
-        except Exception as e: self.logger.error(f"Error querying ChromaDB: {e}", exc_info=self.verbose); return []
+    # REMOVED: add_knowledge (moved to KnowledgeHandler)
+    # REMOVED: retrieve_context (moved to KnowledgeHandler)
 
     async def retrieve_memory(self, query: str, user_id: str, limit: int = config.MEM0_RESULTS_COUNT) -> List[Dict]:
         """Retrieves relevant memories from Mem0."""
+        # (Implementation remains the same, using _run_sync_in_thread)
         try:
             relevant_memories = await self._run_sync_in_thread(
                 self.mem0_memory.search, query=query, user_id=user_id, limit=limit
@@ -227,7 +268,10 @@ class CoreAgentServices:
 
     async def add_memory(self, text: str, user_id: str, agent_id: str):
         """Adds an interaction to Mem0."""
+        # (Implementation remains the same, using _run_sync_in_thread)
         try:
             await self._run_sync_in_thread(self.mem0_memory.add, text=text, user_id=user_id, agent_id=agent_id)
             self.logger.debug(f"Saved interaction to Mem0: User={user_id}, Agent={agent_id}.")
         except Exception as e: self.logger.error(f"Could not save interaction to Mem0: {e}", exc_info=self.verbose)
+
+

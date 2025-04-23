@@ -6,6 +6,12 @@
 from .chat_handler import ChatHandler
 from .events_handler import EventHandler
 from .scheduler_handler import SchedulerHandler
+from .goal_handler import GoalHandler
+from .monitoring_handler import MonitoringHandler
+from .pipeline_handler import PipelineHandler
+from .admin_handler import AdminHandler
+from .knowledge_handler import KnowledgeHandler
+from .file_handler import FileHandler
 
 # This allows imports like:
 # from handlers import ChatHandler

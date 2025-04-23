@@ -1,4 +1,5 @@
 # requirements.txt for gen_ai_project
+PyYAML>=6.0,<7.00             # For YAML configuration files
 
 # --- Core LangChain & LLM Interaction ---
 langchain>=0.1.0,<0.2.0          # Core framework, agent tools, document loaders etc.

@@ -1,5 +1,20 @@
+# utils/config.py
 import os
 from dotenv import load_dotenv
+
+load_dotenv()
+
+# --- Define Base Directories ---
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # Project root (gen_ai_project/)
+CONFIG_DIR = os.path.join(BASE_DIR, "config") # Config directory path
+WORKSPACE_DIR = os.path.abspath(os.getenv("WORKSPACE_DIR", os.path.join(BASE_DIR, "workspace")))
+# --- End Define Base Directories ---
+
+# ... rest of your config variables (OLLAMA_MODEL, DB_URI, etc.) ...
+CHROMA_DB_PATH = os.path.join(WORKSPACE_DIR, "chroma_db")
+COLLECTION_NAME = os.getenv("COLLECTION_NAME", "gen_ai_docs")
+# ... etc ...
+
 
 # Load environment variables from a .env file if it exists in the project root.
 # Create a file named '.env' in your project root (gen_ai_project/) for sensitive info.
@@ -17,6 +32,7 @@ load_dotenv(dotenv_path=dotenv_path)
 
 # --- LLM Configuration ---
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "mistral") # Default to "mistral" if not set
+ADMIN_API_KEY = os.getenv("ADMIN_API_KEY") # Load the admin API key
 
 # --- Database Configuration ---
 # Set DB_TYPE to "sqlite", "postgresql", "mysql", etc. in .env or here

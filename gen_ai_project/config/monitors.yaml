@@ -1,0 +1,64 @@
+# config/monitors.yaml
+
+# --- Monitor Definitions ---
+
+high_salary_check:
+  id: high_salary_check # Optional if key is used as ID, but good practice
+  description: Check for employees with salary > 100k
+  enabled: true
+  check:
+    type: sql
+    query: "SELECT COUNT(*) as count FROM employees WHERE salary > 100000"
+  rule:
+    type: threshold
+    field: count # Field in the check result to evaluate
+    operator: ">"
+    value: 0
+  action:
+    type: enqueue_event # Type of action
+    event_type: monitor_alert # Event type for EventHandler
+    event_data: # Data to send with the event
+      level: warning
+      message_template: "Monitor '{monitor_id}': Found {result_value} employees with salary > 100k."
+      monitor_description: "{description}" # Can use placeholders here too
+    alert_on_resolve: true # Also send an event when condition is no longer met
+
+db_connection_check:
+  id: db_connection_check
+  description: Check if database connection is working
+  enabled: true
+  check:
+    type: db_ping # Special check type
+  rule:
+    type: equality
+    field: status # Field in check result
+    value: "error" # Trigger if status is 'error'
+  action:
+    type: enqueue_event
+    event_type: monitor_alert
+    event_data:
+      level: critical
+      message_template: "Monitor '{monitor_id}': Database connection failed! Error: {error_message}"
+      monitor_description": "{description}"
+    alert_on_resolve: true
+
+# --- Add more monitor definitions here ---
+# website_status_check:
+#   id: website_status_check
+#   description: Check if example.com is up
+#   enabled: false # Disabled by default until tool exists
+#   check:
+#     type: tool_call
+#     tool_name: check_website_status # Assumes a tool wrapper exists in CoreServices
+#     params: { url: "https://example.com" }
+#   rule:
+#     type: equality
+#     field: status # Assumes tool returns {"status": "UP/DOWN", ...}
+#     value: "DOWN"
+#   action:
+#     type: direct_call # Call a notification tool directly
+#     tool_name: send_slack_alert # Assumes a tool wrapper exists
+#     params: # Parameters for the tool
+#       channel: "#alerts"
+#       message_template: "ALERT: Monitor '{monitor_id}' failed. Website {url} appears DOWN. Result: {check_result}"
+

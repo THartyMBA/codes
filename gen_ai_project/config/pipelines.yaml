@@ -1,0 +1,65 @@
+# config/pipelines.yaml
+
+# --- Pipeline Definitions ---
+
+csv_analysis_report:
+  - step_id: load_data
+    description: Load CSV data
+    tool: _load_data # Assumes BaseAgent._load_data is accessible/wrapped in services
+    params:
+      data_source: "{{initial_context.file_path}}" # Use placeholders for context
+    output_key: dataframe # Key to store output under in context
+
+  - step_id: generate_summary_stats
+    description: Generate summary statistics
+    tool: _generate_dataframe_summary # Hypothetical sync tool in services
+    params:
+      df: "{{context.dataframe}}" # Reference previous step's output
+    output_key: summary_stats_text
+
+  - step_id: generate_plot
+    description: Generate data visualization
+    tool: _run_visualization_tool_async # Use async wrapper
+    params:
+      data_source: "{{initial_context.file_path}}" # Can reuse initial context
+      request: "Create a histogram of the 'value' column." # Example request
+      output_filename: "{{initial_context.file_path}}_hist.png"
+    output_key: plot_result_message # Message from the viz tool
+
+  - step_id: generate_report
+    description: Generate final PDF report
+    tool: _run_reporting_tool_async # Use async wrapper
+    params:
+      data_source: "{{initial_context.file_path}}"
+      # Using YAML multiline string literal style (|) for readability
+      request: |
+        Create a PDF report named '{{initial_context.file_path}}_report.pdf'.
+        Include a title 'Data Analysis Report for {{initial_context.file_path}}'.
+        Add a section with the summary statistics: {{context.summary_stats_text}}.
+        Add a section including the generated plot '{{initial_context.file_path}}_hist.png'.
+    output_key: report_result_message
+
+simple_sql_summary:
+  - step_id: run_sql
+    description: Run predefined SQL query
+    tool: _run_sql_query_tool_async
+    params:
+      natural_language_query: "Summarize total employees per department."
+    output_key: sql_summary
+
+  - step_id: log_summary
+    description: Log the summary to memory
+    tool: add_memory # Direct call to service method
+    params:
+      text: "SQL Summary Result:\n{{context.sql_summary}}"
+      user_id: "system_pipeline"
+      agent_id: "simple_sql_summary_pipeline"
+    output_key: memory_add_status # Optional: capture status if method returns one
+
+# --- Add more pipeline definitions here ---
+# Example:
+# another_pipeline:
+#   - step_id: step1
+#     ...
+#   - step_id: step2
+#     ...
