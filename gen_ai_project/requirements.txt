@@ -1,72 +1,84 @@
 # requirements.txt for gen_ai_project
 
 # --- Core LangChain & LLM Interaction ---
-langchain>=0.1.0,<0.2.0  # Core framework, agent tools, document loaders etc.
-langchain-core>=0.1.0,<0.2.0 # Core abstractions (prompts, messages, runnables)
+langchain>=0.1.0,<0.2.0          # Core framework, agent tools, document loaders etc.
+langchain-core>=0.1.0,<0.2.0     # Core abstractions (prompts, messages, runnables)
 langchain-community>=0.0.10,<0.1.0 # Community integrations (Ollama, SQLDatabase, etc.)
-langgraph>=0.0.20,<0.1.0 # For potential goal-oriented agent structures
+langgraph>=0.0.20,<0.1.0         # For potential goal-oriented agent structures
 
 # Ollama LLM support is included in langchain-community
 # NOTE: Ollama itself must be installed separately on your system.
 
 # --- RAG (Vector Store & Embeddings) ---
-chromadb>=0.4.15,<0.5.0     # Vector database client
+chromadb>=0.4.15,<0.5.0         # Vector database client
 sentence-transformers>=2.2.0,<3.0.0 # For the default embedding model (all-MiniLM-L6-v2)
 # If using OpenAI embeddings, uncomment below and set OPENAI_API_KEY env var
 # openai>=1.0.0,<2.0.0
-# tiktoken # Needed for token counting with OpenAI
+# tiktoken                         # Needed for token counting with OpenAI
 
 # --- Document Processing for RAG ---
-unstructured>=0.10.0,<0.11.0 # Base library for loading various file types
+unstructured>=0.10.0,<0.12.0     # Base library for loading various file types (Updated upper bound slightly)
 # Install extras for specific file types needed by unstructured:
 # Example: pip install "unstructured[pdf,docx,xlsx,md]"
 # Add the specific extras you need below (common ones included):
-pypdf>=3.15.0,<4.0.0         # Required by unstructured for PDF processing
-python-docx>=1.0.0,<2.0.0     # Required by unstructured for DOCX processing
-openpyxl>=3.1.0,<3.2.0       # Required by unstructured/pandas for XLSX processing
-markdown>=3.5.0,<3.6.0       # Required by unstructured for Markdown processing
+pypdf>=3.15.0,<4.0.0             # Required by unstructured for PDF processing
+python-docx>=1.0.0,<2.0.0         # Required by unstructured for DOCX processing
+openpyxl>=3.1.0,<3.2.0           # Required by unstructured/pandas for XLSX processing
+markdown>=3.5.0,<3.6.0           # Required by unstructured for Markdown processing
 
 # --- Memory ---
-mem0ai>=0.1.0,<0.2.0         # Mem0 library for conversational memory
+mem0ai>=0.1.0,<0.2.0             # Mem0 library for conversational memory
 
 # --- Data Handling & Science Stack ---
-pandas>=2.0.0,<3.0.0         # Data manipulation and analysis (used by Viz, Modeling, Forecasting)
-numpy>=1.20.0,<2.0.0         # Numerical operations (dependency for pandas, sklearn, etc.)
+pandas>=2.0.0,<3.0.0             # Data manipulation and analysis (used by Viz, Modeling, Forecasting)
+numpy>=1.20.0,<2.0.0             # Numerical operations (dependency for pandas, sklearn, etc.)
 
 # --- Visualization ---
-matplotlib>=3.7.0,<4.0.0     # Plotting library
-seaborn>=0.12.0,<0.14.0       # Statistical data visualization
+matplotlib>=3.7.0,<4.0.0         # Plotting library
+seaborn>=0.12.0,<0.14.0           # Statistical data visualization
 
 # --- Machine Learning Modeling ---
-scikit-learn>=1.3.0,<1.4.0   # ML library (preprocessing, models, metrics)
-joblib>=1.3.0,<1.4.0         # For saving/loading sklearn models/pipelines
+scikit-learn>=1.3.0,<1.4.0       # ML library (preprocessing, models, metrics)
+joblib>=1.3.0,<1.4.0             # For saving/loading sklearn models/pipelines
 
 # --- Time Series Forecasting ---
-statsmodels>=0.14.0,<0.15.0   # For SARIMAX and other statistical models
+statsmodels>=0.14.0,<0.15.0       # For SARIMAX and other statistical models
 
 # --- SQL Database Interaction ---
-sqlalchemy>=2.0.0,<2.1.0     # SQL toolkit and Object Relational Mapper
+sqlalchemy>=2.0.0,<2.1.0         # SQL toolkit and Object Relational Mapper
 # NOTE: You might need a specific DB driver depending on your database:
-# psycopg2-binary            # Example for PostgreSQL
-# mysql-connector-python     # Example for MySQL
-# pyodbc                     # Example for SQL Server/ODBC
+# psycopg2-binary                # Example for PostgreSQL
+# mysql-connector-python         # Example for MySQL
+# pyodbc                         # Example for SQL Server/ODBC
 
 # --- Autonomy & Scheduling ---
-schedule>=1.2.0,<1.3.0       # Simple scheduler used in the example
-watchdog>=3.0.0,<4.0.0       # For file system event monitoring example
+APScheduler>=3.10.0,<4.0.0       # Asynchronous task scheduler (replaces 'schedule')
+# schedule>=1.2.0,<1.3.0         # Removed, replaced by APScheduler
+watchdog>=3.0.0,<4.0.0           # For file system event monitoring example
+
+# --- Reporting Agent ---
+WeasyPrint>=59.0,<60.0           # HTML to PDF generation (Requires OS dependencies like Pango/Cairo)
+Jinja2>=3.1.0,<3.2.0             # HTML templating engine
+
+# --- Web API Backend ---
+fastapi>=0.100.0,<0.110.0        # Modern web framework for building APIs
+uvicorn[standard]>=0.20.0,<0.25.0 # ASGI server to run FastAPI (standard includes websockets, cython)
+pydantic>=2.0.0,<3.0.0           # Data validation (used heavily by FastAPI)
+aiofiles>=23.1.0,<23.3.0         # For async file operations (often needed by FastAPI/Uvicorn)
+
+# --- Web UI Frontend ---
+streamlit>=1.28.0,<1.30.0        # Framework for building interactive web apps
 
 # --- Utilities ---
-python-dotenv>=1.0.0,<1.1.0   # For loading environment variables (e.g., API keys)
-requests>=2.30.0,<2.32.0     # For making HTTP requests (used by many libraries, web agents)
-ipykernel                   # Optional: Useful for running in Jupyter notebooks
+python-dotenv>=1.0.0,<1.1.0       # For loading environment variables (e.g., API keys)
+requests>=2.30.0,<2.32.0         # For making HTTP requests (used by Streamlit app, web agents)
+ipykernel                       # Optional: Useful for running in Jupyter notebooks
 
 # --- Potential Future Agent Dependencies (Optional - uncomment/add as needed) ---
-# google-api-python-client   # For Google Calendar/Gmail Agent
-# google-auth-oauthlib       # Auth for Google APIs
-# google-auth-httplib2       # Auth for Google APIs
-# slack_sdk                  # For Slack Agent
-# beautifulsoup4             # For Web Scraper Agent (along with requests)
-# docker                     # For Sandboxed Code Execution Agent
-# reportlab                  # For PDF Report Generation Agent
-# WeasyPrint                 # Alternative for PDF Report Generation (HTML/CSS to PDF)
-# Jinja2                     # For templating in Report Generation Agent
+# google-api-python-client       # For Google Calendar/Gmail Agent
+# google-auth-oauthlib           # Auth for Google APIs
+# google-auth-httplib2           # Auth for Google APIs
+# slack_sdk                      # For Slack Agent
+# beautifulsoup4                 # For Web Scraper Agent (along with requests)
+# docker                         # For Sandboxed Code Execution Agent
+# reportlab                      # Alternative PDF generation library
