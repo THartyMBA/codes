@@ -47,7 +47,7 @@ from statsmodels.tsa.stattools import adfuller # For potential future use (e.g.,
 # Import the evaluation function if it's defined in time_series.py
 try:
     # Assuming time_series.py is in the same directory or accessible via PYTHONPATH
-    from time_series import calculate_forecast_metrics
+    from utils_funcs.time_series import calculate_forecast_metrics
 except ImportError:
     print("Warning: Could not import 'calculate_forecast_metrics' from time_series.py. Forecast evaluation might be limited.")
     # Define a basic fallback or skip evaluation if import fails
