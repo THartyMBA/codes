@@ -1060,7 +1060,7 @@ Ensure the output is a valid JSON object.
         return result_message
 
 
-# --- Supervisor Agent Class (Modified for RAG) ---
+# --- Supervisor Agent Class (Modified for RAG and Autonomy) ---
 class SupervisorAgent:
     def __init__(self, model_name: str = "mistral", temperature: float = 0.7, db_uri: Optional[str] = None):
         self.model_name = model_name; self.temperature = temperature; self.db_uri = db_uri
@@ -1121,7 +1121,7 @@ class SupervisorAgent:
     def _add_documents_to_chroma(self, documents: List[LangchainDocument]):
         """Adds processed document chunks to the ChromaDB collection."""
         if not documents: print("No documents provided to add."); return
-        ids = [str(uuid.uuid4()) for _ in documents]
+        ids = [str(uuid.uuid4()) for _ in documents] # Use uuid for unique IDs
         contents = [doc.page_content for doc in documents]
         metadatas = [doc.metadata for doc in documents]
         try:
@@ -1280,9 +1280,13 @@ Okay, begin!"""
             print(f"Error initializing supervisor agent executor: {e}\n{traceback.format_exc()}")
             raise
 
+    # --- METHOD FOR INTERACTIVE CHAT ---
     def run(self, user_input: str, user_id: str = "default_user") -> Dict[str, Any]:
-        """Runs the agent executor and then enhances the response with RAG and Memory."""
-        print(f"\n--- Running Supervisor Agent ---"); print(f"User ({user_id}) Input: {user_input}")
+        """
+        Runs the agent executor for interactive chat and enhances the response with RAG and Memory.
+        This is the primary method for user interaction.
+        """
+        print(f"\n--- Running Supervisor Agent (Interactive) ---"); print(f"User ({user_id}) Input: {user_input}")
         if not self.agent_executor: return {"error": "Supervisor agent executor not initialized."}
 
         agent_response = {}
@@ -1362,11 +1366,91 @@ Synthesized Final Answer:
             agent_response['error'] = str(e)
             agent_response['final_output'] = final_answer # Ensure final_output exists even on error
 
-        print(f"--- Supervisor Agent Finished ---")
+        print(f"--- Supervisor Agent Finished (Interactive) ---")
         return agent_response
 
+    # --- METHOD FOR AUTONOMOUS EXECUTION ---
+    def _execute_autonomous_task(self, task_prompt: str, task_id: str = "autonomous_task") -> Dict[str, Any]:
+        """
+        Executes a task using the agent executor, bypassing the usual RAG/Memory synthesis.
+        Logs the output or saves it as needed. Designed for scheduled/automated execution.
 
-# --- Example Usage (Modified) ---
+        Args:
+            task_prompt (str): The prompt describing the task for the agent.
+            task_id (str): A unique identifier for this task run (used for logging).
+
+        Returns:
+            Dict[str, Any]: The raw response dictionary from the agent executor, or an error dict.
+        """
+        print(f"\n--- Running Autonomous Task ({task_id}) ---")
+        print(f"Task Prompt: {task_prompt}")
+        if not self.agent_executor:
+            print("Error: Supervisor agent executor not initialized.")
+            return {"error": "Supervisor agent executor not initialized."}
+
+        try:
+            # Invoke the agent with the predefined task prompt
+            # Note: This bypasses the RAG/Memory synthesis done in the `run` method.
+            # The agent will still use its tools as needed based on the prompt.
+            response = self.agent_executor.invoke({"input": task_prompt})
+            output = response.get("output", "Agent did not produce output for autonomous task.")
+            print(f"Autonomous Task Output: {output}")
+
+            # --- Handle the output ---
+            # You might want to:
+            # 1. Log the output to a file.
+            # 2. Save results if the task involved file generation (the tool should handle this).
+            # 3. Send a notification (requires adding notification capabilities).
+            # 4. Update a status database.
+
+            # Example: Log to a dedicated file in the workspace
+            log_file_path = os.path.join(self.workspace_dir, f"{task_id}_log.txt")
+            with open(log_file_path, "a") as log_file:
+                timestamp = datetime.now().isoformat()
+                log_file.write(f"--- {timestamp} ---\n")
+                log_file.write(f"Task: {task_prompt}\n")
+                log_file.write(f"Output:\n{output}\n\n")
+            print(f"Autonomous task output logged to: {log_file_path}")
+
+            # Add interaction to Mem0 if desired (maybe with a system user_id)
+            try:
+                self.mem0_memory.add(
+                    text=f"Autonomous Task: {task_prompt}\nResult: {output}",
+                    user_id="system_scheduler", # Identify scheduled tasks
+                    agent_id=task_id
+                )
+                print("Saved autonomous task interaction to Mem0.")
+            except Exception as e:
+                print(f"Could not save autonomous task interaction to Mem0: {e}")
+
+
+            return response # Return the raw response dictionary
+
+        except Exception as e:
+            print(f"Error during autonomous task execution ({task_id}): {e}\n{traceback.format_exc()}")
+            # Log the error as well
+            error_log_file_path = os.path.join(self.workspace_dir, f"{task_id}_error_log.txt")
+            with open(error_log_file_path, "a") as log_file:
+                 timestamp = datetime.now().isoformat()
+                 log_file.write(f"--- {timestamp} ---\n")
+                 log_file.write(f"Task: {task_prompt}\n")
+                 log_file.write(f"Error: {e}\n{traceback.format_exc()}\n\n")
+            print(f"Autonomous task error logged to: {error_log_file_path}")
+            return {"error": str(e)}
+
+    # --- Potential specific autonomous methods (Examples) ---
+    # def perform_daily_report(self):
+    #     """Example specific autonomous task method."""
+    #     task_prompt = "Generate the daily sales summary report using the SQL database and save it to 'daily_sales.txt'."
+    #     self._execute_autonomous_task(task_prompt, task_id="daily_sales_report")
+    #
+    # def perform_weekly_forecast(self):
+    #     """Example specific autonomous task method."""
+    #     task_prompt = f"Run a 7-day forecast for 'CallVolume' using data from 'call_data.csv' (time col 'Timestamp', freq 'H') and save the model as 'call_forecast_model'."
+    #     self._execute_autonomous_task(task_prompt, task_id="weekly_call_forecast")
+
+
+# --- Example Usage ---
 if __name__ == "__main__":
     # --- Configuration ---
     OLLAMA_MODEL = "mistral"; DB_TYPE = "sqlite"; DB_NAME = "sample_company.db"
@@ -1417,50 +1501,136 @@ Key deliverable: Beta release by November 15th.
         except Exception as e:
             print(f"Error creating knowledge file: {e}")
 
-    # --- Add Knowledge using the Tool ---
+    # --- Add Knowledge using the Tool (Run once interactively or ensure it's done) ---
     if os.path.exists(knowledge_file_path):
-        print("\n--- Task: Add Knowledge to KB ---")
-        task_add_knowledge = f"Please add the document '{KNOWLEDGE_FILE}' to the knowledge base."
-        result_add_knowledge = supervisor.run(task_add_knowledge, user_id="admin_user")
-        print("\nAdd Knowledge Task Result:", result_add_knowledge.get('final_output', result_add_knowledge)) # Show final synthesized output
+        # Check if knowledge might already be added (simple check based on Mem0)
+        # In a real system, you'd track ingestions more robustly.
+        mem_search = supervisor.mem0_memory.search(query=f"Ingested.*{KNOWLEDGE_FILE}", user_id="supervisor_system", limit=1)
+        if not mem_search:
+            print("\n--- Task: Add Knowledge to KB (First time setup) ---")
+            task_add_knowledge = f"Please add the document '{KNOWLEDGE_FILE}' to the knowledge base."
+            result_add_knowledge = supervisor.run(task_add_knowledge, user_id="admin_user")
+            print("\nAdd Knowledge Task Result:", result_add_knowledge.get('final_output', result_add_knowledge)) # Show final synthesized output
+        else:
+            print(f"\n--- Knowledge file '{KNOWLEDGE_FILE}' likely already ingested. Skipping addition. ---")
     else:
         print("\nSkipping knowledge addition task (knowledge file not found).")
 
 
-    # --- Ask Questions (Leveraging RAG) ---
-    print("\n--- Task: Ask question requiring KB ---")
-    task_rag1 = "What is the vacation policy regarding carry-over days?"
-    result_rag1 = supervisor.run(task_rag1, user_id="employee_alice")
-    print("\nKB Question 1 Result:", result_rag1.get('final_output', result_rag1))
+    # --- CHOOSE EXECUTION MODE ---
+    # Option 1: Run Autonomous Scheduler (Blocks interactive use)
+    # Option 2: Run Interactive Chat Examples (Comment out scheduler below)
 
-    print("\n--- Task: Ask another question requiring KB ---")
-    task_rag2 = "Who is the project manager for Project Phoenix?"
-    result_rag2 = supervisor.run(task_rag2, user_id="employee_bob")
-    print("\nKB Question 2 Result:", result_rag2.get('final_output', result_rag2))
+    RUN_AUTONOMOUS_SCHEDULER = True # Set to False to run interactive examples instead
 
-    print("\n--- Task: Ask question combining KB and potential DB ---")
-    task_rag_db = "What is Charlie's salary and role on Project Phoenix?" # Requires DB for salary, KB for role
-    result_rag_db = supervisor.run(task_rag_db, user_id="manager_dave")
-    print("\nCombined Question Result:", result_rag_db.get('final_output', result_rag_db))
+    if RUN_AUTONOMOUS_SCHEDULER:
+        print("\n--- Starting Autonomous Scheduler Mode ---")
+        print("NOTE: This mode will run scheduled tasks indefinitely.")
+        print("      Interactive chat examples below will be skipped.")
+        print("      Press Ctrl+C to stop the scheduler.")
 
-    # --- Run other tasks (Keep existing examples if desired) ---
-    # Example: SQL Query
-    if DB_URI:
-        print("\n--- Task: SQL Query ---")
-        task_sql = "Who are the employees in the Engineering department?"
-        result_sql = supervisor.run(task_sql, user_id="hr_manager")
-        print("\nSQL Task Result:", result_sql.get('final_output', result_sql))
+        # --- Define Scheduled Tasks ---
+        print("\n--- Defining Scheduled Tasks ---")
 
-    # Example: Forecasting (if data exists)
-    TIME_SERIES_DATA_FILE = "sample_ts_data.csv" # Ensure this matches earlier creation
-    ts_file_path = os.path.join(supervisor.workspace_dir, TIME_SERIES_DATA_FILE)
-    if os.path.exists(ts_file_path):
-        print("\n--- Task: Time Series Forecasting ---")
-        task_forecast = f"Forecast 'CallVolume' from '{TIME_SERIES_DATA_FILE}' for 7 days. Time column is 'Date', frequency is 'D'."
-        result_forecast = supervisor.run(task_forecast, user_id="ops_manager")
-        print("\nForecasting Task Result:", result_forecast.get('final_output', result_forecast))
+        def run_daily_summary_task():
+            print(f"\n[{datetime.now()}] Triggering Daily Summary Task...")
+            # Example: Define the task as a specific prompt
+            task_prompt = "Query the database for the total number of employees in each department and list them."
+            supervisor._execute_autonomous_task(task_prompt, task_id="daily_dept_summary")
+
+        def run_knowledge_check_task():
+             print(f"\n[{datetime.now()}] Triggering Knowledge Check Task...")
+             # Example: Ask a question that requires the KB
+             task_prompt = "What is the company policy on remote work for the Sales department?"
+             supervisor._execute_autonomous_task(task_prompt, task_id="kb_remote_work_check")
+
+        # --- Schedule the Tasks ---
+        # schedule.every().day.at("08:00").do(run_daily_summary_task)
+        # schedule.every().monday.at("09:00").do(supervisor.perform_weekly_forecast) # If using specific methods
+        schedule.every(1).minutes.do(run_daily_summary_task) # Example: Run summary every minute for testing
+        schedule.every(90).seconds.do(run_knowledge_check_task) # Example: Run KB check every 90s for testing
+
+        print("\n--- Starting Scheduler ---")
+        print(f"Scheduled tasks: {schedule.get_jobs()}")
+
+        # --- Run the Scheduler Loop ---
+        try:
+            while True:
+                schedule.run_pending()
+                time.sleep(1) # Check every second
+        except KeyboardInterrupt:
+            print("\nScheduler stopped by user.")
+
+        # --- Event-Driven Trigger Note ---
+        # To implement event-driven triggers (e.g., reacting to new files),
+        # you would typically run a separate script (like the watchdog example)
+        # that imports and uses this initialized 'supervisor' instance.
+        # That script would call `supervisor._execute_autonomous_task(...)`
+        # when an event occurs. It's generally not mixed directly into this
+        # main scheduling loop unless using a more advanced framework like asyncio or APScheduler.
+
+        # --- Goal-Oriented Note ---
+        # For more complex autonomous behavior where the agent needs to plan
+        # and adapt (e.g., "Monitor website X and if it's down for 5 mins, try Y, then report"),
+        # consider restructuring the agent using LangGraph. This involves defining
+        # states, nodes (functions for steps), and edges (transitions) to create
+        # a state machine that pursues the goal.
+
     else:
-        print("\nSkipping forecasting task (data file not found).")
+        print("\n--- Starting Interactive Chat Mode ---")
+        print("NOTE: Autonomous scheduler is disabled.")
+
+        # --- Ask Questions (Leveraging RAG) ---
+        print("\n--- Task: Ask question requiring KB ---")
+        task_rag1 = "What is the vacation policy regarding carry-over days?"
+        result_rag1 = supervisor.run(task_rag1, user_id="employee_alice")
+        print("\nKB Question 1 Result:", result_rag1.get('final_output', result_rag1))
+
+        print("\n--- Task: Ask another question requiring KB ---")
+        task_rag2 = "Who is the project manager for Project Phoenix?"
+        result_rag2 = supervisor.run(task_rag2, user_id="employee_bob")
+        print("\nKB Question 2 Result:", result_rag2.get('final_output', result_rag2))
+
+        print("\n--- Task: Ask question combining KB and potential DB ---")
+        task_rag_db = "What is Charlie's salary and role on Project Phoenix?" # Requires DB for salary, KB for role
+        result_rag_db = supervisor.run(task_rag_db, user_id="manager_dave")
+        print("\nCombined Question Result:", result_rag_db.get('final_output', result_rag_db))
+
+        # --- Run other tasks (Keep existing examples if desired) ---
+        # Example: SQL Query
+        if DB_URI:
+            print("\n--- Task: SQL Query ---")
+            task_sql = "Who are the employees in the Engineering department?"
+            result_sql = supervisor.run(task_sql, user_id="hr_manager")
+            print("\nSQL Task Result:", result_sql.get('final_output', result_sql))
+
+        # Example: Forecasting (if data exists)
+        TIME_SERIES_DATA_FILE = "sample_ts_data.csv" # Ensure this matches earlier creation
+        ts_file_path = os.path.join(supervisor.workspace_dir, TIME_SERIES_DATA_FILE)
+        if os.path.exists(ts_file_path):
+            print("\n--- Task: Time Series Forecasting ---")
+            task_forecast = f"Forecast 'CallVolume' from '{TIME_SERIES_DATA_FILE}' for 7 days. Time column is 'Date', frequency is 'D'."
+            result_forecast = supervisor.run(task_forecast, user_id="ops_manager")
+            print("\nForecasting Task Result:", result_forecast.get('final_output', result_forecast))
+        else:
+            # Create dummy data if missing for demo
+            print(f"\n--- Creating dummy time series data: {TIME_SERIES_DATA_FILE} ---")
+            try:
+                dates = pd.date_range(start='2023-01-01', periods=90, freq='D')
+                # Simple sine wave + trend + noise
+                volume = (np.sin(np.arange(90) * 2 * np.pi / 7) * 10 +
+                          np.linspace(50, 80, 90) +
+                          np.random.normal(0, 5, 90))
+                ts_df = pd.DataFrame({'Date': dates, 'CallVolume': volume.astype(int)})
+                ts_df.to_csv(ts_file_path, index=False)
+                print(f"Dummy file '{TIME_SERIES_DATA_FILE}' created in workspace.")
+                print("\n--- Task: Time Series Forecasting (with dummy data) ---")
+                task_forecast = f"Forecast 'CallVolume' from '{TIME_SERIES_DATA_FILE}' for 7 days. Time column is 'Date', frequency is 'D'."
+                result_forecast = supervisor.run(task_forecast, user_id="ops_manager")
+                print("\nForecasting Task Result:", result_forecast.get('final_output', result_forecast))
+            except Exception as e:
+                print(f"Error creating dummy TS data or running forecast: {e}")
 
 
     print("\n--- Agent Execution Finished ---")
+    print("Note: This is a demo. In a real-world scenario, you would have more robust error handling, logging, and possibly a UI for interaction.")
