@@ -1,0 +1,55 @@
+# Use an official Python runtime as a parent image
+# Choose a version compatible with your project (e.g., 3.11)
+# Using a Debian-based image makes installing OS dependencies easier
+FROM python:3.11-slim-bookworm
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Install OS-level dependencies for WeasyPrint and other potential needs
+# Using slim image, might need build-essential for some packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    pkg-config \
+    libcairo2-dev \
+    libpango1.0-dev \
+    libpangocairo-1.0-0 \
+    libgdk-pixbuf2.0-dev \
+    libffi-dev \
+    shared-mime-info \
+    # Add any other OS dependencies your project might need
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
+
+# Copy the requirements file into the container
+COPY requirements.txt .
+
+# Install Python dependencies
+# --no-cache-dir reduces image size
+# Consider using a virtual environment inside the container if preferred, but often not necessary
+RUN pip install --no-cache-dir --upgrade pip
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the rest of the application code into the container
+COPY . .
+
+# Make ports available to the world outside this container
+# FastAPI default: 8000, Streamlit default: 8501
+EXPOSE 8000
+EXPOSE 8501
+
+# Define environment variables (defaults, can be overridden at runtime)
+# Set PYTHONUNBUFFERED to ensure logs are sent straight to stdout/stderr
+ENV PYTHONUNBUFFERED=1
+# Set default ports if your app uses env vars for them
+ENV FASTAPI_PORT=8000
+ENV STREAMLIT_PORT=8501
+# Set default workspace if needed (though mounting is better)
+ENV WORKSPACE_DIR=/app/workspace
+
+# Create the default workspace directory (if it doesn't get copied)
+RUN mkdir -p /app/workspace
+
+# Command to run the application when the container launches
+# Assumes run.py starts both FastAPI and Streamlit
+CMD ["python", "run.py"]

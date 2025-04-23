@@ -102,6 +102,56 @@ The core architecture emphasizes separation of concerns through distinct **Handl
 *   **`config/pipelines.yaml`:** Defines named sequences of steps (pipelines) that can be executed. Each step typically involves calling a tool/method from `CoreAgentServices`. Uses `{{context.key}}` and `{{initial_context.key}}` for passing data between steps.
 *   **`config/monitors.yaml`:** Defines proactive monitoring checks. Each monitor specifies a `check` (e.g., SQL query, tool call), a `rule` (e.g., threshold, equality) to evaluate the check result, and an `action` (e.g., enqueue event, direct tool call) to perform if the rule is met.
 *   **`utils/config.py`:** Loads settings from `.env` and provides default values.
+*   
+## Running with Docker Compose
+
+This project includes a `docker-compose.yaml` file to easily run the application and its dependencies (like Ollama) in containers.
+
+**Prerequisites:**
+
+*   Docker installed.
+*   Docker Compose installed (often included with Docker Desktop).
+*   If you intend to use GPU acceleration for Ollama (recommended), ensure you have the NVIDIA Container Toolkit installed and Docker configured to use GPUs. The `docker-compose.yaml` is pre-configured to request GPU access for the Ollama service.
+
+**Steps:**
+
+1.  **Configure Environment:** Ensure you have a `.env` file in the project root (you can copy `.env.example` if it exists). The `docker-compose.yaml` file will automatically load variables from this file into the `app` container.
+    *   *Note:* The `OLLAMA_BASE_URL` is automatically set to `http://ollama:11434` within the `app` service by the `docker-compose.yaml`, so the application container can reach the Ollama container. You don't need to set this specific variable in your `.env` file when using Docker Compose unless you want to override it.
+
+2.  **Build and Start Services:** Open a terminal in the project root directory and run:
+    ```bash
+    docker-compose up --build -d
+    ```
+    *   `--build`: Forces Docker Compose to build the image for the `app` service based on the `Dockerfile`. You might omit this on subsequent runs if the code/dependencies haven't changed.
+    *   `-d`: Runs the containers in detached mode (in the background).
+
+3.  **Access Services:**
+    *   **Streamlit Frontend:** http://localhost:8501
+    *   **FastAPI Backend:** http://localhost:8000 (API docs likely at http://localhost:8000/docs)
+    *   **Ollama API:** http://localhost:11434 (You can interact with Ollama directly here if needed, e.g., using its CLI or API clients).
+
+4.  **Pull Ollama Models (if needed):** The first time you run, or if you need a specific model, you might need to tell the Ollama service to download it. You can do this by executing a command inside the running `ollama` container:
+    ```bash
+    docker-compose exec ollama ollama pull <model_name>
+    # Example: docker-compose exec ollama ollama pull mistral
+    ```
+    Models will be stored in the `ollama_data` Docker volume and persist across container restarts.
+
+5.  **View Logs:** To see the logs from the application or Ollama:
+    ```bash
+    docker-compose logs -f app       # Follow logs for the main application
+    docker-compose logs -f ollama    # Follow logs for the Ollama service
+    docker-compose logs -f           # Follow logs for all services
+    ```
+
+6.  **Stop Services:** To stop and remove the containers, network, and volumes defined in the compose file:
+    ```bash
+    docker-compose down
+    ```
+    *   If you want to remove the persisted `ollama_data` volume (which contains downloaded models), use `docker-compose down -v`. **Use with caution**, as you will need to re-download models.
+
+**(Optional) Database:** The `docker-compose.yaml` includes a commented-out section for a PostgreSQL database service. If your application requires a database, you can uncomment this section, configure the `DATABASE_URL` in your `.env` file (pointing to `db:5432`), and ensure your application code uses it.
+
 
 ## Running the Application
 

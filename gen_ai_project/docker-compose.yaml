@@ -1,0 +1,77 @@
+version: '3.8'
+
+services:
+  app:
+    build: . # Build the image from the Dockerfile in the current directory
+    container_name: gen-ai-app
+    ports:
+      - "8000:8000" # FastAPI
+      - "8501:8501" # Streamlit
+    volumes:
+      - ./workspace:/app/workspace
+      - ./config:/app/config
+      # - ./sample_company.db:/app/sample_company.db # If using SQLite
+      # If you want code changes to reflect without rebuilding (for dev):
+      # - .:/app # Mounts the whole project dir, careful with overwriting installed deps
+    env_file:
+      - .env # Load environment variables from .env
+    environment:
+      # Override Ollama URL to point to the ollama service below
+      - OLLAMA_BASE_URL=http://ollama:11434
+      # Override DB URL if using the postgres service below
+      # - DATABASE_URL=postgresql://user:password@db:5432/mydatabase
+    depends_on:
+      - ollama
+      # - db # Uncomment if using the db service
+    restart: unless-stopped
+    # Add GPU capabilities if your app directly needs GPU (less common)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama # Persist downloaded models
+    restart: unless-stopped
+    # Add GPU capabilities - Ollama needs this!
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1 # Or 'all'
+              capabilities: [gpu]
+    # Optional: Pull models on startup (replace 'mistral' with your model)
+    # entrypoint: >
+    #   sh -c "
+    #   ollama serve &
+    #   sleep 5 &&
+    #   ollama pull mistral &&
+    #   wait
+    #   "
+
+  # Optional: Example PostgreSQL Database Service
+  # db:
+  #   image: postgres:15
+  #   container_name: postgres-db
+  #   environment:
+  #     POSTGRES_DB: mydatabase
+  #     POSTGRES_USER: user
+  #     POSTGRES_PASSWORD: password # Use secrets in production!
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   ports:
+  #     - "5432:5432" # Expose only if needed externally
+  #   restart: unless-stopped
+
+volumes:
+  ollama_data:
+  # postgres_data: # Uncomment if using the db service

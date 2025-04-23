@@ -1,0 +1,39 @@
+# Ignore virtual environment
+venv/
+.venv/
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore IDE/editor files
+.vscode/
+.idea/
+*.sublime-*
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+# Ignore Git files
+.git/
+.gitignore
+
+# Ignore Docker files
+Dockerfile
+.dockerignore
+
+# Ignore local environment file (should be injected, not built-in)
+.env
+
+# Ignore local data/outputs (mount these instead)
+sample_company.db
+*.log
+logs/
+workspace/ # Usually better to mount this as a volume
+
+# Add any other files/directories to ignore
+# that are not relevant to the Docker image
+# or that should not be included in the image.
